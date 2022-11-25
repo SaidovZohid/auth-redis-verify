@@ -22,7 +22,7 @@ func New(opt *RouteOption) *gin.Engine {
 	apiV1 := router.Group("/user")
 	{
 		apiV1.POST("/register", handler.Register)
-		apiV1.POST("/veirfy", handler.Verify)
+		apiV1.POST("/verify", handler.Verify)
 	}
 	return router
 }

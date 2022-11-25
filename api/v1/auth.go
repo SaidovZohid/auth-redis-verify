@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -29,20 +30,36 @@ func (h *handler) Register(ctx *gin.Context) {
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
-	defer rdb.Close()
-	randomCode := passwordgenerator.EncodeToString(6)
+	userData, err := json.Marshal(req)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errResponse(err))
+		return
+	}
+	err = rdb.Set(context.Background(), "user_"+req.Email, string(userData), time.Minute*10).Err()
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errResponse(err))
+		return
+	}
+
 	go func() {
-		email.SendEmail(h.cfg, &email.SendEmailRequest{
+		randomCode := passwordgenerator.EncodeToString(6)
+		err := email.SendEmail(h.cfg, &email.SendEmailRequest{
 			To:      []string{req.Email},
 			Subject: "Verification Email",
 			Body: map[string]string{
 				"code": randomCode,
 			},
 		})
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, errResponse(err))
+			return
+		}
+		err = rdb.Set(context.Background(), "code_"+req.Email, randomCode, time.Minute*3).Err()
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, errResponse(err))
+			return
+		}
 	}()
-	rdb.Set(context.Background(), "code", randomCode, time.Minute*2)
-	rdb.Set(context.Background(), "email", req.Email, time.Minute*2)
-	rdb.Set(context.Background(), "first_name", req.FirstName, time.Minute*2)
 
 	ctx.JSON(http.StatusOK, models.ResponseOK{
 		Message: "Verification code has been sent to your email address. Code is valid for 2 minutes.",
@@ -67,28 +84,35 @@ func (h *handler) Verify(ctx *gin.Context) {
 	})
 	defer rdb.Close()
 
-	code, err := rdb.Get(context.Background(), "code").Result()
-	email, err := rdb.Get(context.Background(), "email").Result()
-	name, err := rdb.Get(context.Background(), "first_name").Result()
+	userData, err := rdb.Get(context.Background(), "user_"+req.Email).Result()
 	if err != nil {
-		ctx.JSON(http.StatusGatewayTimeout, errResponse(err))
-		return
-	}
-	if err != nil {
-		ctx.JSON(http.StatusGatewayTimeout, errResponse(err))
-		return
-	}
-	if err != nil {
-		ctx.JSON(http.StatusGatewayTimeout, errResponse(err))
+		ctx.JSON(http.StatusNotFound, errResponse(err))
 		return
 	}
 
-	if email != req.Email {
+	var user models.User
+	err = json.Unmarshal([]byte(userData), &user)
+
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errResponse(err))
+		return
+	}
+
+	if user.Email != req.Email {
 		ctx.JSON(http.StatusBadGateway, models.ResponseError{
 			Error: "Email is not correct",
 		})
 		return
 	}
+
+	code, err := rdb.Get(context.Background(), "code_"+req.Email).Result()
+	if err != nil {
+		ctx.JSON(http.StatusBadGateway, models.ResponseError{
+			Error: "Code is not correct",
+		})
+		return
+	}
+	
 	if code != req.Code {
 		ctx.JSON(http.StatusBadGateway, models.ResponseError{
 			Error: "Code is not correct",
@@ -96,9 +120,9 @@ func (h *handler) Verify(ctx *gin.Context) {
 		return
 	}
 
-	user, err := h.storage.User().Create(&repo.User{
-		FirstName: name,
-		Email:     email,
+	user2, err := h.storage.User().Create(&repo.User{
+		FirstName: user.FirstName,
+		Email:     user.Email,
 	})
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, models.ResponseError{
@@ -108,7 +132,7 @@ func (h *handler) Verify(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, models.GetUser{
-		ID:        int(user.ID),
-		CreatedAt: user.CreatedAt,
+		ID:        int(user2.ID),
+		CreatedAt: user2.CreatedAt,
 	})
 }
